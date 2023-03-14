@@ -1,9 +1,10 @@
 import Base:size, getindex, setindex!, IndexStyle, IndexCartesian
 
+using SparseArrays:AbstractSparseArray
 using CUDA
 using Adapt
 
-struct SparseMatrixCSR{Tv, Ti <: Integer, ValueContainerType<:AbstractVector, IdxContainerType<:AbstractVector} <: AbstractMatrix{Tv}
+struct SparseMatrixCSR{Tv, Ti <: Integer, ValueContainerType<:AbstractVector, IdxContainerType<:AbstractVector} <: AbstractSparseArray{Tv, Ti, 2}
     m::Int
     n::Int
     rowptr::IdxContainerType
@@ -30,6 +31,7 @@ function SparseMatrixCSR(A::Matrix{T}) where {T}
     nzval = T[]
     rowptr = Int[1]
     colval = Int[]
+    # WARN: PERF: row-major traversal of column-major matrix
     for i in 1:m
         nnz = 0
         for j in 1:n 
@@ -58,8 +60,9 @@ Base.getindex(A::SparseMatrixCSR, I::Tuple{Int, Int}) = getindex(A, I[1], I[2])
 function Base.getindex(A::SparseMatrixCSR, i::Int, j::Int)
     colidx_begin = A.rowptr[i]
     colidx_end = A.rowptr[i+1]-1
-    nzval_idx = searchsortedfirst(view(A.colval, colidx_begin, colidx_end), j)
-    if nzval_idx > colidx_end - colidx_begin
+    row_colvals = @view A.colval[colidx_begin:colidx_end]
+    nzval_idx = searchsortedfirst(row_colvals, j)
+    if nzval_idx > length(row_colvals) || row_colvals[nzval_idx] != j
         return zero(eltype(A))
     else
         return A.nzval[colidx_begin+nzval_idx-1]
