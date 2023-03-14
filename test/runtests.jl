@@ -1,6 +1,4 @@
 using ProgrammingMassivelyParallelProcessors
-using Test
+using SafeTestsets
 
-@testset "ProgrammingMassivelyParallelProcessors.jl" begin
-    # Write your tests here.
-end
+@safetestset "Convolution" begin include("convolution_test.jl") end
