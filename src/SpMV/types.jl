@@ -3,6 +3,7 @@ import Base:size, getindex, setindex!, IndexStyle, IndexCartesian
 using SparseArrays:AbstractSparseArray
 using CUDA
 using Adapt
+using GPUArraysCore: AbstractGPUArray
 
 struct SparseMatrixCSR{Tv, Ti <: Integer, ValueContainerType<:AbstractVector, IdxContainerType<:AbstractVector} <: AbstractSparseArray{Tv, Ti, 2}
     m::Int
@@ -89,4 +90,88 @@ function Matrix(A::SparseMatrixCSR)
         end
     end
     A_dense
+end
+
+struct SparseMatrixELL{Tv, Ti, ValueContainerType, IdxContainerType, ColMajor} <: AbstractSparseArray{Tv, Ti, 2}
+    m::Int
+    n::Int
+    nzval::ValueContainerType
+    colval::IdxContainerType
+    ell_width::Ti 
+
+    function SparseMatrixELL(m, n, nzval::AbstractArray, colval::AbstractArray{Ti}, ell_width::I) where {Ti, I<:Integer}
+        Tv = eltype(nzval)
+        ValueContainerType = typeof(nzval)
+        IdxContainerType = typeof(colval)
+        new{Tv, Ti, ValueContainerType, IdxContainerType, Val(false)}(m, n, nzval, colval, ell_width)
+    end
+
+    function SparseMatrixELL(A::SparseMatrixCSR)
+        idxs = A.rowptr[1:A.m]
+        @views row_widths = idxs[begin+1:end] .- idxs[begin:end-1]
+        ell_width = maximum(row_widths)
+        nvals = ell_width * A.m
+        m = A.m; n = A.n
+        colval = similar(A.colval, nvals)
+        nzval = similar(A.nzval, nvals)
+        _fill_ell_buffers!(nzval, colval, A, ell_width)
+        SparseMatrixELL(m, n, nzval, colval, ell_width)
+    end
+end
+
+Adapt.@adapt_structure SparseMatrixELL
+
+function _fill_ell_buffers!(nzval, colval, A::SparseMatrixCSR, ell_width)
+    Tv = eltype(nzval)
+    for row in 1:A.m 
+        ell_start = (row-1) * ell_width + 1
+        start = A.rowptr[row]
+        stop = A.rowptr[row+1]-1
+        nnz = stop - start + 1
+        pad_size = ell_width - (start - stop + 1)
+        # TODO: the code should run without this condition as well
+        if pad_size == 0
+            continue
+        end
+        row_colval = @view colval[ell_start:ell_start+ell_width-1]
+        row_nzval = @view nzval[ell_start:ell_start+ell_width-1]
+        @assert length(row_colval) == length(row_nzval) == ell_width
+        if A.n - A.colval[stop] >= pad_size # add all the padding at the end
+            row_colval[begin:nnz] .= A.colval[start:stop]
+            row_nzval[begin:nnz] .= A.nzval[start:stop]
+            # remaining is padding
+            row_nzval[nnz+1:end] .= zero(Tv)
+            padcolval_start = A.colval[stop]+1
+            padcolval_stop = padcolval_start + pad_size - 1 
+            @show length(row_colval[nnz+1:end]) length(padcolval_start:padcolval_stop)
+            row_colval[nnz+1:end] .= padcolval_start:padcolval_stop
+        elseif A.colval[start] > pad_size  # add all the padding at the beginning
+            row_nzval[begin:pad_size] .= zero(Tv)
+            row_colval[begin:pad_size] .= 1:pad_size # TODO: use firstindex, axis etc instead of hardcoding indices
+            row_nzval[pad_size+1:end] .= A.nzval[start:stop]
+            row_colval[pad_size+1:end] .= A.colval[start:stop]
+        else  # interleave using greedy approach
+            # TODO: use firstindex and/or axes instead of hardcoding indices 
+            current_colval = 1
+            k = start
+            j = firstindex(row_colval)
+            while j <= lastindex(ell_width) && k <= stop
+                cval = A.colval[k]
+                if current_colval != cval  # insert padding
+                    row_nzval[j] = zero(Tv)
+                    row_colval[j] = current_colval
+                    current_colval += 1
+                else  # insert actual value
+                    row_nzval[j] = A.nzval[k] 
+                    row_colval[j] = cval
+                    k += 1
+                end
+                j += 1
+            end
+        end
+    end
+end
+
+function _fill_ell_buffers!(nzval::AbstractGPUArray, colval::AbstractGPUArray, A, ell_width)
+    not_implemented()
 end

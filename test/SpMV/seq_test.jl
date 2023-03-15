@@ -40,4 +40,9 @@ mul!(b, A_csr, x)
 
 @test b == A * x
 
+# should compile and run
+A_ell = SparseMatrixELL(A_csr)
+ell_nzval = filter(!=(0), A_ell.nzval)
+@test_broken ell_nzval == A_csr.nzval
+
 end # module
