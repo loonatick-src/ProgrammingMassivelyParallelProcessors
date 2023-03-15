@@ -36,8 +36,8 @@ end
 function _spmv_csr_kernel(b, A, x)
     # fixme
     i = (blockIdx().x - 1) * blockDim().x + threadIdx().x
-    acc = zero(eltype(b))
     if i <= A.m
+        acc = zero(eltype(b))
         start = A.rowptr[i]
         stop = A.rowptr[i+1]-1
         for k in start:stop
