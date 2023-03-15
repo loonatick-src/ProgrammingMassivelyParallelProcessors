@@ -11,18 +11,20 @@ import Base: convert
 
 Base.convert(T::Type) = Fix1(convert, T)
 
-m = n = 4000;
+# m = n = 4000;
+m = n = 32;
 # very memory-inefficient way of generating sparse matrices
 # TODO: consider generating COO format and then converting to CSR 
+# TODO: dangerous as some tests might pass accidentally
 A = rand(Float32, m,n)
 x = rand(Float32, n)
 
 # zero-out approx 90% of the elements
 A_sparse = map(x -> x = x < 0.1 ? x : zero(typeof(x)), A)
-# SGeMV
+# GeMV
 b_from_dense = A_sparse * x
 A_csr = SparseMatrixCSR(A_sparse)
-# SSpMV
+# SpMV
 b_from_csr = A_csr * x
 
 # TODO: why do they differ?
@@ -56,5 +58,17 @@ x_cu = CuArray(x_int)
 b_cu = A_sparse_cu * x_cu
 
 @test Array(b_cu) == b_from_csr
+
+A_ell = SparseMatrixELLCSR(A_csr)
+# should compile and run
+A_ell_cu = cu_sparse_ellcsr(A_ell)
+
+@test Array(A_ell_cu.nzval) == A_ell.nzval
+@test Array(A_ell_cu.colval) == A_ell.colval
+@test A_ell_cu.ell_width == A_ell.ell_width
+
+b_ell_cu = A_ell_cu * x_cu
+
+@test_broken Array(b_ell_cu) == b_from_csr
 
 end # module

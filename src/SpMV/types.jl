@@ -5,7 +5,9 @@ using CUDA
 using Adapt
 using GPUArraysCore: AbstractGPUArray
 
-struct SparseMatrixCSR{Tv, Ti <: Integer, ValueContainerType<:AbstractVector, IdxContainerType<:AbstractVector} <: AbstractSparseArray{Tv, Ti, 2}
+abstract type AbstractSparseMatrixCSR{Tv, Ti} <: AbstractSparseArray{Tv, Ti, 2} end
+
+struct SparseMatrixCSR{Tv, Ti <: Integer, ValueContainerType<:AbstractVector, IdxContainerType<:AbstractVector} <: AbstractSparseMatrixCSR{Tv, Ti}
     m::Int
     n::Int
     rowptr::IdxContainerType
@@ -92,21 +94,21 @@ function Matrix(A::SparseMatrixCSR)
     A_dense
 end
 
-struct SparseMatrixELL{Tv, Ti, ValueContainerType, IdxContainerType, ColMajor} <: AbstractSparseArray{Tv, Ti, 2}
+struct SparseMatrixELLCSR{Tv, Ti, ValueContainerType, IdxContainerType, ColMajor} <: AbstractSparseMatrixCSR{Tv, Ti}
     m::Int
     n::Int
     nzval::ValueContainerType
     colval::IdxContainerType
     ell_width::Ti 
 
-    function SparseMatrixELL(m, n, nzval::AbstractArray, colval::AbstractArray{Ti}, ell_width::I) where {Ti, I<:Integer}
+    function SparseMatrixELLCSR(m, n, nzval::AbstractArray, colval::AbstractArray{Ti}, ell_width::I) where {Ti, I<:Integer}
         Tv = eltype(nzval)
         ValueContainerType = typeof(nzval)
         IdxContainerType = typeof(colval)
         new{Tv, Ti, ValueContainerType, IdxContainerType, Val(false)}(m, n, nzval, colval, ell_width)
     end
 
-    function SparseMatrixELL(A::SparseMatrixCSR)
+    function SparseMatrixELLCSR(A::SparseMatrixCSR)
         idxs = A.rowptr[1:A.m]
         @views row_widths = idxs[begin+1:end] .- idxs[begin:end-1]
         ell_width = maximum(row_widths)
@@ -115,58 +117,57 @@ struct SparseMatrixELL{Tv, Ti, ValueContainerType, IdxContainerType, ColMajor} <
         colval = similar(A.colval, nvals)
         nzval = similar(A.nzval, nvals)
         _fill_ell_buffers!(nzval, colval, A, ell_width)
-        SparseMatrixELL(m, n, nzval, colval, ell_width)
+        SparseMatrixELLCSR(m, n, nzval, colval, ell_width)
     end
 end
 
-Adapt.@adapt_structure SparseMatrixELL
+Adapt.@adapt_structure SparseMatrixELLCSR
+
+function cu_sparse_ellcsr(A::SparseMatrixELLCSR)
+    nzval = CuArray(A.nzval)
+    colval = CuArray(A.colval)
+    SparseMatrixELLCSR(A.m, A.n, nzval, colval, A.ell_width)
+end
 
 function _fill_ell_buffers!(nzval, colval, A::SparseMatrixCSR, ell_width)
     Tv = eltype(nzval)
     for row in 1:A.m 
-        ell_start = (row-1) * ell_width + 1
-        start = A.rowptr[row]
-        stop = A.rowptr[row+1]-1
-        nnz = stop - start + 1
-        pad_size = ell_width - (start - stop + 1)
-        # TODO: the code should run without this condition as well
-        if pad_size == 0
-            continue
-        end
-        row_colval = @view colval[ell_start:ell_start+ell_width-1]
-        row_nzval = @view nzval[ell_start:ell_start+ell_width-1]
-        @assert length(row_colval) == length(row_nzval) == ell_width
-        if A.n - A.colval[stop] >= pad_size # add all the padding at the end
-            row_colval[begin:nnz] .= A.colval[start:stop]
-            row_nzval[begin:nnz] .= A.nzval[start:stop]
-            # remaining is padding
-            row_nzval[nnz+1:end] .= zero(Tv)
-            padcolval_start = A.colval[stop]+1
-            padcolval_stop = padcolval_start + pad_size - 1 
-            @show length(row_colval[nnz+1:end]) length(padcolval_start:padcolval_stop)
-            row_colval[nnz+1:end] .= padcolval_start:padcolval_stop
-        elseif A.colval[start] > pad_size  # add all the padding at the beginning
-            row_nzval[begin:pad_size] .= zero(Tv)
-            row_colval[begin:pad_size] .= 1:pad_size # TODO: use firstindex, axis etc instead of hardcoding indices
-            row_nzval[pad_size+1:end] .= A.nzval[start:stop]
-            row_colval[pad_size+1:end] .= A.colval[start:stop]
-        else  # interleave using greedy approach
-            # TODO: use firstindex and/or axes instead of hardcoding indices 
-            current_colval = 1
-            k = start
-            j = firstindex(row_colval)
-            while j <= lastindex(ell_width) && k <= stop
-                cval = A.colval[k]
-                if current_colval != cval  # insert padding
-                    row_nzval[j] = zero(Tv)
-                    row_colval[j] = current_colval
-                    current_colval += 1
-                else  # insert actual value
-                    row_nzval[j] = A.nzval[k] 
-                    row_colval[j] = cval
-                    k += 1
+        for row in 1:A.m 
+            row_begin = A.rowptr[row]
+            row_end = A.rowptr[row+1]-1
+            row_nzval_csr = @view A.nzval[row_begin:row_end]
+            row_colval_csr = @view A.colval[row_begin:row_end]
+            ell_begin = (row-1) * ell_width + 1
+            ell_end = ell_begin + ell_width - 1
+            row_nzval = @view nzval[ell_begin:ell_end]
+            row_colval = @view colval[ell_begin:ell_end]
+            nnz = length(row_nzval_csr)
+            pad_size = ell_width - nnz
+            if length(row_colval_csr) == 0 || first(row_colval_csr) > pad_size
+                row_nzval[begin:pad_size] .= zero(Tv)
+                row_colval[begin:pad_size] .= 1:pad_size
+                row_nzval[pad_size+1:end] .= row_nzval_csr
+                row_colval[pad_size+1:end] .= row_colval_csr
+            elseif A.n - last(row_colval_csr) >= pad_size
+                row_nzval[begin:nnz] .= row_nzval_csr
+                row_colval[begin:nnz] .= row_colval_csr
+                row_nzval[nnz+1:end] .= zero(Tv)
+                row_colval[nnz+1:end] .= (nnz+1):(nnz+pad_size)
+            else
+                i = firstindex(row_colval_csr)
+                for (curr_col, _) in pairs(row_nzval)
+                    csr_col = row_colval_csr[i]
+                    if csr_col == curr_col || pad_size == 0
+                        row_nzval[curr_col] = row_nzval_csr[i]
+                        row_colval[curr_col] = csr_col
+                        i += 1
+                    else pad_size > 0
+                        row_nzval[curr_col] = zero(Tv)
+                        row_colval[curr_col] = curr_col
+                        pad_size -= 1
+                    end
                 end
-                j += 1
+                @assert i == length(row_colval_csr) + 1
             end
         end
     end
@@ -174,4 +175,16 @@ end
 
 function _fill_ell_buffers!(nzval::AbstractGPUArray, colval::AbstractGPUArray, A, ell_width)
     not_implemented()
+end
+
+function Base.getindex(A::SparseMatrixELLCSR{Tv, Ti, ValueContainerType, IdxContainerType, Val(false)}, i0::Integer, i1::Integer) where {Tv, Ti <:Integer, ValueContainerType, IdxContainerType}
+    rowptr = (i0 - 1) * A.ell_width + 1
+    row_colval = @view A.colval[rowptr:rowptr + A.ell_width-1]
+    row_nzval = @view A.nzval[rowptr:rowptr + A.ell_width-1]
+    j = searchsortedfirst(row_colval, i1)
+    if j > length(row_colval)
+        return zero(Tv)
+    else 
+        return row_nzval[j]
+    end
 end

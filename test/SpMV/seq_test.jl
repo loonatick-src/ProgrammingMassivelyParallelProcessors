@@ -41,8 +41,15 @@ mul!(b, A_csr, x)
 @test b == A * x
 
 # should compile and run
-A_ell = SparseMatrixELL(A_csr)
-ell_nzval = filter(!=(0), A_ell.nzval)
-@test_broken ell_nzval == A_csr.nzval
+A_ell = SparseMatrixELLCSR(A_csr)
+ell_idxs = A_ell.nzval .!= 0
+ell_nzval = A_ell.nzval[ell_idxs]
+ell_colval = A_ell.colval[ell_idxs]
+@test ell_nzval == A_csr.nzval
+@test ell_colval == A_csr.colval
 
-end # module
+for i in 1:size(A,1), j in size(A,2)
+    @test A_ell[i,j] == A_csr[i,j] == A[i,j]
+end
+
+end # modulncle
