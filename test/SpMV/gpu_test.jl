@@ -11,11 +11,10 @@ import Base: convert
 
 Base.convert(T::Type) = Fix1(convert, T)
 
-# m = n = 4000;
-m = n = 32;
+m = n = 2000;
 # very memory-inefficient way of generating sparse matrices
 # TODO: consider generating COO format and then converting to CSR 
-# TODO: dangerous as some tests might pass accidentally
+# TODO: dangerous as some tests might randomly pass
 A = rand(Float32, m,n)
 x = rand(Float32, n)
 
@@ -27,7 +26,7 @@ A_csr = SparseMatrixCSR(A_sparse)
 # SpMV
 b_from_csr = A_csr * x
 
-# TODO: why do they differ?
+# TODO: why do they differ? the Flops should be the same as sequential version 
 @test_broken b_from_csr == b_from_dense
 @show norm(b_from_csr .- b_from_dense, Inf) / norm(b_from_dense, Inf)
 
@@ -69,6 +68,6 @@ A_ell_cu = cu_sparse_ellcsr(A_ell)
 
 b_ell_cu = A_ell_cu * x_cu
 
-@test_broken Array(b_ell_cu) == b_from_csr
+@test Array(b_ell_cu) == b_from_csr
 
 end # module

@@ -61,12 +61,11 @@ end
 function _spmv_ellcsr_kernel(b, A, x)
     i = (blockIdx().x-1)*blockDim().x + threadIdx().x
     acc = zero(eltype(b))
-    if i < A.m
-        start = (i-1) * (A.ell_width) + 1
-        stop = start + A.ell_width - 1
-        for k in start:stop
-            j = A.colval[k]
-            acc += A.nzval[j] * x[j]
+    if i <= A.m
+        base = (i-1)*A.ell_width+1
+        for k in 1:A.ell_width
+            j = A.colval[base+k-1] 
+            acc += A.nzval[base+k-1]*x[j]
         end
         b[i] = acc
     end
