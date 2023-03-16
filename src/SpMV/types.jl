@@ -50,7 +50,7 @@ function SparseMatrixCSR(A::Matrix{T}) where {T}
     SparseMatrixCSR(m, n, rowptr, colval, nzval)
 end
 
-Base.size(A::SparseMatrixCSR) = (A.m, A.n)
+Base.size(A::AbstractSparseMatrixCSR) = (A.m, A.n)
 
 # TODO: consult interface docs for exact interface of AbstractMatrix
 function Base.getindex(A::SparseMatrixCSR, i::Int)
@@ -105,10 +105,19 @@ struct SparseMatrixELLCSR{Tv, Ti, ValueContainerType, IdxContainerType, ColMajor
         Tv = eltype(nzval)
         ValueContainerType = typeof(nzval)
         IdxContainerType = typeof(colval)
-        new{Tv, Ti, ValueContainerType, IdxContainerType, Val(false)}(m, n, nzval, colval, ell_width)
+        new{Tv, Ti, ValueContainerType, IdxContainerType, Val{false}}(m, n, nzval, colval, ell_width)
+    end
+    function SparseMatrixELLCSR(m, n, nzval::AbstractArray, colval::AbstractArray{Ti}, ell_width::I, col_maj::V) where {Ti, I<:Integer, V<:Val}
+        Tv = eltype(nzval)
+        ValueContainerType = typeof(nzval)
+        IdxContainerType = typeof(colval)
+        @assert get_value(col_maj) isa Bool
+        new{Tv, Ti, ValueContainerType, IdxContainerType, V}(m, n, nzval, colval, ell_width)
     end
 
-    function SparseMatrixELLCSR(A::SparseMatrixCSR)
+    SparseMatrixELLCSR(A::SparseMatrixCSR) = SparseMatrixELLCSR(A, Val(false))
+
+    function SparseMatrixELLCSR(A::SparseMatrixCSR, ::Val{false})
         idxs = A.rowptr[1:A.m]
         @views row_widths = idxs[begin+1:end] .- idxs[begin:end-1]
         ell_width = maximum(row_widths)
@@ -119,14 +128,35 @@ struct SparseMatrixELLCSR{Tv, Ti, ValueContainerType, IdxContainerType, ColMajor
         _fill_ell_buffers!(nzval, colval, A, ell_width)
         SparseMatrixELLCSR(m, n, nzval, colval, ell_width)
     end
+
+    function SparseMatrixELLCSR(A::SparseMatrixCSR, ::Val{true})
+        idxs = A.rowptr[1:A.m]
+        @views row_widths = idxs[begin+1:end] .- idxs[begin:end-1]
+        ell_width = maximum(row_widths)
+        nvals = ell_width * A.m
+        m = A.m; n = A.n
+        colval_rowmaj = similar(A.colval, nvals)
+        nzval_rowmaj = similar(A.nzval, nvals)
+        _fill_ell_buffers!(nzval_rowmaj, colval_rowmaj, A, ell_width)
+        nzval = transpose(reshape(nzval_rowmaj, m, ell_width))[:]
+        colval = transpose(reshape(colval_rowmaj, m, ell_width))[:]
+        Tv = eltype(nzval)
+        Ti = eltype(colval)
+        ValueContainerType = typeof(nzval)
+        IdxContainerType = typeof(colval)
+        new{Tv, Ti, ValueContainerType, IdxContainerType, Val{true}}(m, n, nzval, colval, ell_width)
+    end
 end
+
+get_colmaj(::SparseMatrixELLCSR{Tv, Ti, V, C, ColMaj}) where {Tv, Ti, V, C, ColMaj} = ColMaj()
 
 Adapt.@adapt_structure SparseMatrixELLCSR
 
 function cu_sparse_ellcsr(A::SparseMatrixELLCSR)
     nzval = CuArray(A.nzval)
     colval = CuArray(A.colval)
-    SparseMatrixELLCSR(A.m, A.n, nzval, colval, A.ell_width)
+    colmaj = get_colmaj(A) 
+    SparseMatrixELLCSR(A.m, A.n, nzval, colval, A.ell_width, colmaj)
 end
 
 function _fill_ell_buffers!(nzval, colval, A::SparseMatrixCSR, ell_width)
@@ -177,7 +207,7 @@ function _fill_ell_buffers!(nzval::AbstractGPUArray, colval::AbstractGPUArray, A
     not_implemented()
 end
 
-function Base.getindex(A::SparseMatrixELLCSR{Tv, Ti, ValueContainerType, IdxContainerType, Val(false)}, i0::Integer, i1::Integer) where {Tv, Ti <:Integer, ValueContainerType, IdxContainerType}
+function Base.getindex(A::SparseMatrixELLCSR{Tv, Ti, ValueContainerType, IdxContainerType, Val{false}}, i0::Integer, i1::Integer) where {Tv, Ti <:Integer, ValueContainerType, IdxContainerType}
     rowptr = (i0 - 1) * A.ell_width + 1
     row_colval = @view A.colval[rowptr:rowptr + A.ell_width-1]
     row_nzval = @view A.nzval[rowptr:rowptr + A.ell_width-1]

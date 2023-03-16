@@ -48,7 +48,7 @@ function _spmv_csr_kernel(b, A, x)
     nothing
 end
 
-function LinearAlgebra.mul!(b::VCu_out, A::SparseMatrixELLCSR{Tv, Ti, ValueContainerType, IdxContainerType, Val(false)}, x::VCu_in) where {VCu_out <: AbstractGPUArray, VCu_in<:AbstractGPUArray, Tv, Ti<:Integer, ValueContainerType<:AbstractGPUArray, IdxContainerType<:AbstractGPUArray}
+function LinearAlgebra.mul!(b::VCu_out, A::SparseMatrixELLCSR{Tv, Ti, ValueContainerType, IdxContainerType, Val{false}}, x::VCu_in) where {VCu_out <: AbstractGPUArray, VCu_in<:AbstractGPUArray, Tv, Ti<:Integer, ValueContainerType<:AbstractGPUArray, IdxContainerType<:AbstractGPUArray}
     # TODO: fetch warp size and max threads per block instead of hard-coding values
     threads = min(32*cld(A.m, 32), 1024)
     blocks = cld(A.m, threads)

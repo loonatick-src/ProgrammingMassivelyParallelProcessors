@@ -52,4 +52,7 @@ for i in 1:size(A,1), j in size(A,2)
     @test A_ell[i,j] == A_csr[i,j] == A[i,j]
 end
 
+# should compile and run
+A_ell = SparseMatrixELLCSR(A_csr, Val(true))
+
 end # modulncle
