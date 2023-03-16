@@ -118,8 +118,7 @@ struct SparseMatrixELLCSR{Tv, Ti, ValueContainerType, IdxContainerType, ColMajor
     SparseMatrixELLCSR(A::SparseMatrixCSR) = SparseMatrixELLCSR(A, Val(false))
 
     function SparseMatrixELLCSR(A::SparseMatrixCSR, ::Val{false})
-        idxs = A.rowptr[1:A.m]
-        @views row_widths = idxs[begin+1:end] .- idxs[begin:end-1]
+        @views row_widths = A.rowptr[begin+1:end] .- A.rowptr[begin:end-1]
         ell_width = maximum(row_widths)
         nvals = ell_width * A.m
         m = A.m; n = A.n
@@ -130,16 +129,15 @@ struct SparseMatrixELLCSR{Tv, Ti, ValueContainerType, IdxContainerType, ColMajor
     end
 
     function SparseMatrixELLCSR(A::SparseMatrixCSR, ::Val{true})
-        idxs = A.rowptr[1:A.m]
-        @views row_widths = idxs[begin+1:end] .- idxs[begin:end-1]
+        @views row_widths = A.rowptr[begin+1:end] .- A.rowptr[begin:end-1]
         ell_width = maximum(row_widths)
         nvals = ell_width * A.m
         m = A.m; n = A.n
         colval_rowmaj = similar(A.colval, nvals)
         nzval_rowmaj = similar(A.nzval, nvals)
         _fill_ell_buffers!(nzval_rowmaj, colval_rowmaj, A, ell_width)
-        nzval = transpose(reshape(nzval_rowmaj, m, ell_width))[:]
-        colval = transpose(reshape(colval_rowmaj, m, ell_width))[:]
+        nzval = transpose(reshape(nzval_rowmaj, ell_width, m))[:]
+        colval = transpose(reshape(colval_rowmaj, ell_width, m))[:]
         Tv = eltype(nzval)
         Ti = eltype(colval)
         ValueContainerType = typeof(nzval)
@@ -218,3 +216,18 @@ function Base.getindex(A::SparseMatrixELLCSR{Tv, Ti, ValueContainerType, IdxCont
         return row_nzval[j]
     end
 end
+
+function Base.getindex(A::SparseMatrixELLCSR{Tv, Ti, ValueContainerType, IdxContainerType, Val{true}}, i0::Integer, i1::Integer) where {Tv, Ti <:Integer, ValueContainerType, IdxContainerType}
+    # PERF: assuming `transpose` and `reshape` are lazy
+    nzval = reshape(A.nzval, A.m, A.ell_width)
+    colval = reshape(A.colval, A.m, A.ell_width)
+    row_nzval = @view nzval[i0,:]
+    row_colval = @view colval[i0,:]
+    j = searchsortedfirst(row_colval, i1)
+    if j > length(row_colval)
+        return zero(Tv)
+    else
+        return row_nzval[j]
+    end
+end
+
