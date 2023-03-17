@@ -3,7 +3,7 @@ import LinearAlgebra:mul!
 import Base:*
 
 using LinearAlgebra:dot
-using GPUArraysCore: AbstractGPUArray
+using GPUArraysCore: AbstractGPUVector
 using CUDA
 
 function Base.:*(A::SpCSR, x::V) where {SpCSR<:AbstractSparseMatrixCSR, V<:AbstractVector}
@@ -24,10 +24,26 @@ function LinearAlgebra.mul!(b::V1, A::SpCSR, x::V2) where {V1<:AbstractVector, V
 end
 
 # FIXME: not being dispatched correctly
-function LinearAlgebra.mul!(b::VCu1,
-    A::Union{SparseMatrixCSR{Tv, Ti, ValueContainerType, IdxContainerType},
-             SparseMatrixELLCSR{Tv, Ti, ValueContainerType, IdxContainerType, ColMaj}}, x::VCu2) where {VCu1<:AbstractGPUArray, VCu2<:AbstractGPUArray, Tv, Ti<:Integer, ValueContainerType<:AbstractGPUArray, IdxContainerType<:AbstractGPUArray, ColMaj}
+#=
+@generated function LinearAlgebra.mul!(b::VCu1,
+    A::SpCSR, x::VCu2) where {VCu1<:AbstractGPUVector, VCu2<:AbstractGPUVector, SpCSR<:SparseMatrixCSR}
     # TODO: fetch warp size and max threads per block instead of hard-coding values
+    threads = min(32*cld(A.m, 32), 1024)
+    blocks = cld(A.m, threads)
+    CUDA.@sync begin
+        if A isa SparseMatrixCSR
+            @cuda threads=threads blocks=blocks _spmv_csr_kernel(b, A, x)
+        elseif A isa SparseMatrixELLCSR && !get_value(get_colmaj(A))
+            @cuda threads=threads blocks=blocks _spmv_ellcsr_kernel(b, A, x)
+        else
+            @cuda threads=threads blocks=blocks _spmv_ellcsr_kernel_t(b, A, x)
+        end
+    end
+    b
+end
+=#
+
+function LinearAlgebra.mul!(b::VCu1, A::SparseMatrixCSR{Tv, Ti, VC, IC}, x::VCu2) where {Tv, Ti, VC<:AbstractGPUVector, IC<:AbstractGPUVector{<:Integer}, VCu1<:AbstractGPUVector, VCu2<:AbstractGPUVector}
     threads = min(32*cld(A.m, 32), 1024)
     blocks = cld(A.m, threads)
     CUDA.@sync begin
@@ -36,7 +52,26 @@ function LinearAlgebra.mul!(b::VCu1,
     b
 end
 
-function _spmv_csr_kernel(b, A::SparseMatrixCSR, x)
+function LinearAlgebra.mul!(b::VCu1, A::SparseMatrixELLCSR{Tv, Ti, VC, IC, Val{false}}, x::VCu2) where {Tv, Ti, VC<:AbstractGPUVector, IC<:AbstractGPUVector{<:Integer}, VCu1<:AbstractGPUVector, VCu2<:AbstractGPUVector}
+    threads = min(32*cld(A.m, 32), 1024)
+    blocks = cld(A.m, threads)
+    CUDA.@sync begin
+        @cuda threads=threads blocks=blocks _spmv_ellcsr_kernel(b, A, x)
+    end
+    b
+end
+
+function LinearAlgebra.mul!(b::VCu1, A::SparseMatrixELLCSR{Tv, Ti, VC, IC, Val{true}}, x::VCu2) where {Tv, Ti, VC<:AbstractGPUVector, IC<:AbstractGPUVector{<:Integer}, VCu1<:AbstractGPUVector, VCu2<:AbstractGPUVector}
+    threads = min(32*cld(A.m, 32), 1024)
+    blocks = cld(A.m, threads)
+    CUDA.@sync begin
+        @cuda threads=threads blocks=blocks _spmv_ellcsr_kernel_t(b, A, x)
+    end
+    b
+end
+
+
+function _spmv_csr_kernel(b, A, x)
     # fixme
     i = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     if i <= A.m
@@ -51,7 +86,7 @@ function _spmv_csr_kernel(b, A::SparseMatrixCSR, x)
     nothing
 end
 
-function _spmv_csr_kernel(b, A::SparseMatrixELLCSR{Tv, Ti, ValueContainerType, IdxContainerType, Val{false}}, x) where {Tv, Ti, ValueContainerType, IdxContainerType}
+function _spmv_ellcsr_kernel(b, A, x)
     i = (blockIdx().x-1)*blockDim().x + threadIdx().x
     acc = zero(eltype(b))
     if i <= A.m
@@ -65,7 +100,7 @@ function _spmv_csr_kernel(b, A::SparseMatrixELLCSR{Tv, Ti, ValueContainerType, I
     nothing
 end
 
-function _spmv_csr_kernel(b::VCu_out, A::SparseMatrixELLCSR{Tv, Ti, ValueContainerType, IdxContainerType, Val{true}}, x::VCu_in) where {VCu_out<:AbstractGPUArray, VCu_in<:AbstractGPUArray, Tv, Ti, ValueContainerType, IdxContainerType}
+function _spmv_ellcsr_kernel_t(b, A, x)
     row = (blockIdx().x-1)*blockDim().x + threadIdx().x
     stride = A.m
     if row <= A.m
